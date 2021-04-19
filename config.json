@@ -1,0 +1,17 @@
+{
+  "version": "2.0",
+  "app_name": "alpaca_ib_atr",
+  "stages": {
+    "dev": {
+      "api_gateway_stage": "api",
+      "environment_variables": {
+        "MAX_TP_ATR": "3",
+        "MIN_ATR_DESIRED": "0.75",
+        "TRADING_GAP_MINUTES": "30",
+        "MAX_OPEN_POSITIONS": "6",
+        "TRADE_CUTOFF_HOUR": "14",
+        "TAKE_THIS_PROFIT_AND_RUN": "200.0"
+      }
+    }
+  }
+}
