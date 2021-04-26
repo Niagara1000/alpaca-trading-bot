@@ -9,8 +9,18 @@ import time, re
 import os
 import pandas as pd
 import datetime as dt
+import logging
 from datetime import datetime
 from chalice import Chalice
+import boto3
+from botocore.exceptions import ClientError
+
+'''
+Logger
+'''
+logger = logging.getLogger('alpacaTradingBot')
+logger.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 app = Chalice(app_name='alpaca_ib_atr')
 
@@ -47,7 +57,7 @@ def alpaca_trade():
     indicator = d['indicator']
     incoming_alert_hour = int(d['hour'])
     incoming_alert_minute = int(d['minute'])
-    print("Incoming data: Symbol: " + symbol + "; Indicator: " + indicator + "; Close: " + str(close) + "; Low: " + str(low) + "; atr: " + str(atr))
+    logger.info('Incoming data: Symbol: %s; Indicator: %s; Close: %.2f; Low: %.2f; atr: %.2f', symbol, indicator, close, low, atr)
 
     # Get variables for MAX_TP_ATR, etc
     get_env_variables()
@@ -56,7 +66,7 @@ def alpaca_trade():
 
     if(incoming_alert_hour >= TRADE_CUTOFF_HOUR):
         error_message = "Trading is not allowed after " + str(TRADE_CUTOFF_HOUR)
-        print(error_message)
+        logger.warning(error_message)
         return error_message
 
     ## Check if there is existing open position for the same ticker. If yes, dont proceed
@@ -69,7 +79,7 @@ def alpaca_trade():
 
     if position != 0:
         error_message = "Alpaca has existing positions in " + symbol
-        print(error_message)
+        logger.warning(error_message)
         return error_message
 
     '''
@@ -92,24 +102,24 @@ def alpaca_trade():
 
     if timedelta_minutes < TRADING_GAP_MINUTES:
         error_message = "Wait for sometime before placing the order on this stock; Timedelta is: " + str(timedelta_minutes) + " Last filled at: " + str(filled_at)
-        print(error_message)
+        logger.warning(error_message)
         return error_message
 
     # Check if there is at least $200 profit today. If yes, take the profit and run!
     latest_profit_loss = get_latest_profit_loss(api, symbol)
     if latest_profit_loss >= TAKE_THIS_PROFIT_AND_RUN:
         error_message = "You made $" + str(latest_profit_loss) + " in " + symbol + " today. Dont push your luck!"
-        print(error_message)
+        logger.warning(error_message)
         return error_message
 
-    print("Latest profit/loss for " + symbol + " is: " + str(latest_profit_loss))
+    logger.info('Latest profit/loss for %s is %d', symbol, latest_profit_loss)
 
     #Is there any open orders, probably bracket orders not filled yet
     open_orders = api.list_orders(status='open')
     open_symbol_orders = [o for o in open_orders if o.symbol == symbol]
     if len(open_symbol_orders) != 0:
         error_message = "Open order exists for this security"
-        print(error_message)
+        logger.warning(error_message)
         return error_message
 
     #### VALIDATION ENDS
@@ -156,15 +166,15 @@ def alpaca_trade():
         tp_atr = 0
         sl_atr = 0
         trade_date = datetime.today().strftime('%Y-%m-%d')
-        log_data(trade_date, symbol, indicator, purchase_order_id, filled_price, purchase_filled_at, purchase_qty, tp_atr, sl_atr, sale_order_id)
+        record_data_in_s3(trade_date, symbol, indicator, purchase_order_id, filled_price, purchase_filled_at, purchase_qty, tp_atr, sl_atr, sale_order_id)
 
         #Print error message
         error_message = "Alpaca did not return filled price"
-        print(error_message)
+        logger.warning(error_message)
 
         return error_message
 
-    print("Alpaca filled at " + str(filled_price))
+    logger.info('Alpaca filled at %.2f', float(filled_price))
 
     # Calculate profit taking and stop loss
     if ignore_atr == "True": ## if the signal is not strong, keep target small
@@ -215,8 +225,8 @@ def alpaca_trade():
     purchase_filled_at = my_buy_order.filled_at
     purchase_qty = my_buy_order.filled_qty
     trade_date = datetime.today().strftime('%Y-%m-%d')
-    log_data(trade_date, symbol, indicator, purchase_order_id, filled_price, purchase_filled_at, purchase_qty, tp_atr, sl_atr, sale_order_id)
-    print("logging is complete")
+    record_data_in_s3(trade_date, symbol, indicator, purchase_order_id, filled_price, purchase_filled_at, purchase_qty, tp_atr, sl_atr, sale_order_id)
+    logger.info('Recorded trading details in S3')
 
     return filled_price
 
@@ -254,8 +264,7 @@ def execute_bracket_order(symbol, quantity_of_shares, close, low, atr, ignore_at
     purchase_filled_at = 0
     sale_order_id = 'bracket order'
     trade_date = datetime.today().strftime('%Y-%m-%d')
-    log_data(trade_date, symbol, indicator, purchase_order_id, filled_price, purchase_filled_at, purchase_qty, tp_atr, sl_atr, sale_order_id)
-    print("bracket order logging is complete")
+    record_data_in_s3(trade_date, symbol, indicator, purchase_order_id, filled_price, purchase_filled_at, purchase_qty, tp_atr, sl_atr, sale_order_id)
 
     return purchase_order_id
 
@@ -271,11 +280,10 @@ def get_env_variables():
 def round_nearest(x, a):
     return round(round(x / a) * a, 2)
 
-def log_data(date, symbol, indicator, purchase_order_id, purchase_price, purchase_filled_at, quantity, tp_atr, sl_atr, sale_order_id):
-    import boto3
+def record_data_in_s3(date, symbol, indicator, purchase_order_id, purchase_price, purchase_filled_at, quantity, tp_atr, sl_atr, sale_order_id):
     from io import StringIO
     import datetime as dt
-    print("in log data")
+    logger.info('Recording data in S3')
 
     # get your credentials from environment variables
     aws_id = '<aws_id>'
